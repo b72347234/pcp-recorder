@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""PCP 盤口錄製資料每日上傳：Hugging Face 公開資料集 + Kaggle 公開資料集。
+"""PCP 盤口錄製資料每日上傳：Google 雲端硬碟 + Hugging Face 公開資料集 + Kaggle 公開資料集。
 
 用法：
-    upload_daily.py [--date YYYYMMDD] [--dry-run] [--only hf|kaggle]
+    upload_daily.py [--date YYYYMMDD] [--dry-run] [--only gdrive|hf|kaggle]
 
 預設上傳「昨天」（台北日期）的六個 CSV，因為當天檔案還在寫、沒寫完。
 每個 CSV 以 gzip -1 壓縮後上傳（實測壓縮比約 5 倍，每天約 0.76 GB）。
 
-憑證（絕對不要寫進這個檔案，也不要印進 log）：
+憑證（絕對不要寫進這個檔案，也不要印進 log；設定放 upload.env）：
+- Google 雲端硬碟：用 rclone，先跑 `rclone config` 建 remote（預設名稱 gdrive），
+  上傳目的地由環境變數 GDRIVE_REMOTE 指定，預設 gdrive:pcp-recorder，
+  檔案放在 <GDRIVE_REMOTE>/<YYYY-MM-DD>/pcp_<ex>_<date>.csv.gz。
 - HF：環境變數 HF_TOKEN，或事先跑 `huggingface-cli login`（token 存在
   ~/.cache/huggingface/token）。資料集 repo 由環境變數 HF_DATASET_REPO 指定，
   例如 liumuse/pcp-options-orderbook。
@@ -16,7 +19,8 @@
   liumuse/pcp-options-orderbook-2026q4。Kaggle 單一資料集上限 100 GB，
   快滿時腳本會拒絕上傳並在 log 寫明要開新一季的資料集。
 
-冪等：HF 會先列出 repo 已有檔案、跳過已上傳的；Kaggle 用本機 state 檔記錄
+沒設定的目標會跳過，不算失敗。
+冪等：Google 雲端硬碟用 rclone copy（同名同大小會跳過）；HF 會先列出 repo 已有檔案、跳過已上傳的；Kaggle 用本機 state 檔記錄
 已推過的日期，同一天重跑會跳過。失敗時寫 log、不寄通知，exit code 非 0。
 """
 
@@ -35,7 +39,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-PROJECT = Path("/home/hatch/workspace/bybit-pcp-recorder")
+PROJECT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT / "data"
 STAGING_DIR = PROJECT / "upload_staging"
 # Kaggle 版本是整包快照：mirror 必須是 kaggle_dataset 本身（平鋪），
@@ -63,8 +67,8 @@ def log(msg: str) -> None:
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"hf_uploaded": [], "kaggle_uploaded": [], "kaggle_bytes": 0,
-            "kaggle_dataset": None}
+    return {"gdrive_uploaded": [], "hf_uploaded": [], "kaggle_uploaded": [],
+            "kaggle_bytes": 0, "kaggle_dataset": None}
 
 
 def save_state(state: dict) -> None:
@@ -86,15 +90,60 @@ def gzip_csv(src: Path, dst: Path) -> int:
     return dst.stat().st_size
 
 
-def upload_hf(date_str: str, files: list[tuple[Path, str]], dry_run: bool,
-              state: dict) -> bool:
-    """files: [(本機 gz 路徑, repo 內路徑)]。回傳是否全部成功。"""
-    from huggingface_hub import HfApi, list_repo_files
+def upload_gdrive(date_str: str, files: list[tuple[Path, str]], dry_run: bool,
+                  state: dict) -> bool | None:
+    """用 rclone 把 gz 檔傳到 Google 雲端硬碟。回傳 None 表示沒設定、跳過。"""
+    remote = os.environ.get("GDRIVE_REMOTE", "gdrive:pcp-recorder").strip()
+    if not remote or ":" not in remote:
+        log("[gdrive] 未設定 GDRIVE_REMOTE，跳過 Google 雲端硬碟上傳")
+        return None
+    if not shutil.which("rclone"):
+        log("[gdrive] 找不到 rclone，跳過（sudo apt install rclone）")
+        return None
+    name = remote.split(":", 1)[0] + ":"
+    try:
+        remotes = subprocess.run(["rclone", "listremotes"], capture_output=True,
+                                 text=True, timeout=60).stdout.split()
+    except Exception as e:  # noqa: BLE001
+        log(f"[gdrive] rclone listremotes 失敗：{e}")
+        return False
+    if name not in remotes:
+        log(f"[gdrive] rclone 還沒有 {name} 這個 remote，跳過（請先跑 rclone config）")
+        return None
+    dest = f"{remote.rstrip('/')}/{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    if dry_run:
+        log(f"[gdrive] dry-run：會上傳 {len(files)} 個檔到 {dest}")
+        return True
+    ok = True
+    for local, _ in files:
+        try:
+            r = subprocess.run(["rclone", "copy", str(local), dest, "--retries", "5"],
+                               capture_output=True, text=True, timeout=3 * 3600)
+        except Exception as e:  # noqa: BLE001
+            log(f"[gdrive] 上傳 {local.name} 出錯：{e}")
+            ok = False
+            continue
+        if r.returncode != 0:
+            log(f"[gdrive] 上傳 {local.name} 失敗（exit {r.returncode}）：{r.stderr[-800:]}")
+            ok = False
+            continue
+        log(f"[gdrive] 已上傳：{dest}/{local.name}（{local.stat().st_size / 1e6:.1f} MB）")
+        key = f"{date_str}/{local.name}"
+        if key not in state.setdefault("gdrive_uploaded", []):
+            state["gdrive_uploaded"].append(key)
+    save_state(state)
+    return ok
 
+
+def upload_hf(date_str: str, files: list[tuple[Path, str]], dry_run: bool,
+              state: dict) -> bool | None:
+    """files: [(本機 gz 路徑, repo 內路徑)]。回傳是否全部成功；None 表示沒設定、跳過。"""
     repo = os.environ.get("HF_DATASET_REPO", "")
     if not repo:
         log("[hf] 未設定 HF_DATASET_REPO，跳過 HF 上傳")
-        return False
+        return None
+    from huggingface_hub import HfApi, list_repo_files
+
     token = os.environ.get("HF_TOKEN")
     if dry_run:
         log(f"[hf] dry-run：會上傳 {len(files)} 個檔到 {repo}")
@@ -124,12 +173,15 @@ def upload_hf(date_str: str, files: list[tuple[Path, str]], dry_run: bool,
 
 
 def upload_kaggle(date_str: str, files: list[tuple[Path, str]], dry_run: bool,
-                  state: dict) -> bool:
+                  state: dict) -> bool | None:
     """Kaggle 資料集是整包版本快照：把新檔放進本機 mirror 目錄再推一個新版。"""
     slug = os.environ.get("KAGGLE_DATASET_SLUG", "")
     if not slug:
         log("[kaggle] 未設定 KAGGLE_DATASET_SLUG，跳過 Kaggle 上傳")
-        return False
+        return None
+    if date_str in state.get("kaggle_uploaded", []):
+        log(f"[kaggle] {date_str} 已推過，跳過")
+        return True
     if state.get("kaggle_dataset") and state["kaggle_dataset"] != slug:
         log(f"[kaggle] state 記錄的資料集是 {state['kaggle_dataset']}，"
             f"與目前 {slug} 不同，請人工確認後再跑")
@@ -172,7 +224,7 @@ def main() -> int:
     ap.add_argument("--date", default=None,
                     help="要上傳的日期 YYYYMMDD，預設為昨天（台北日期）")
     ap.add_argument("--dry-run", action="store_true", help="只壓縮、不上傳")
-    ap.add_argument("--only", choices=["hf", "kaggle"], default=None)
+    ap.add_argument("--only", choices=["gdrive", "hf", "kaggle"], default=None)
     args = ap.parse_args()
 
     if args.date:
@@ -207,15 +259,24 @@ def main() -> int:
         log(f"[error] {date_str} 一個檔案都沒有，結束")
         return 2
 
-    ok = True
-    if args.only in (None, "hf"):
-        if not upload_hf(date_str, gz_files, args.dry_run, state):
-            ok = False
-    if args.only in (None, "kaggle"):
-        if not upload_kaggle(date_str, gz_files, args.dry_run, state):
-            ok = False
-    log(f"=== {date_str} 完成，{'全部成功' if ok else '有失敗，請看上面 log'} ===")
-    return 0 if ok else 1
+    # 各目標獨立：一個失敗不影響其他；None = 沒設定、跳過
+    results: dict[str, bool | None] = {}
+    targets = [("gdrive", upload_gdrive), ("hf", upload_hf), ("kaggle", upload_kaggle)]
+    for name, fn in targets:
+        if args.only in (None, name):
+            try:
+                results[name] = fn(date_str, gz_files, args.dry_run, state)
+            except Exception as e:  # noqa: BLE001
+                log(f"[{name}] 未預期錯誤：{e}")
+                results[name] = False
+    done = [k for k, v in results.items() if v is True]
+    failed = [k for k, v in results.items() if v is False]
+    skipped = [k for k, v in results.items() if v is None]
+    log(f"=== {date_str} 完成：成功 {done or '無'}、失敗 {failed or '無'}、"
+        f"未設定跳過 {skipped or '無'} ===")
+    if not done and not failed:
+        log("[warn] 三個上傳目標都沒設定，資料只留在本機")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

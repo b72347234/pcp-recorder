@@ -1,0 +1,13 @@
+# 每日上傳前一天 (台北日期) 的六個 CSV: Google 雲端硬碟 (rclone) + Hugging Face + Kaggle。
+# 由 pcp-upload.timer 觸發。@PROJECT@ / @USER@ 由 install.sh 代換。
+[Unit]
+Description=PCP recorder daily upload
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@PROJECT@
+ExecStart=@PROJECT@/upload_daily.sh
+TimeoutStartSec=6h

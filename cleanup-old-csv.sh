@@ -17,10 +17,13 @@
 # 要改天數就改下面的 RETENTION_DAYS, 不要直接改 find 的參數。
 
 set -u
-PROJECT="/home/hatch/workspace/bybit-pcp-recorder"
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${DATA_DIR:-$PROJECT/data}"
 LOG_FILE="$DATA_DIR/cleanup.log"
 RETENTION_DAYS=14
+# 上傳用的壓縮暫存檔 (upload_staging/<日期>/) 上傳完就沒用了, 只留 3 天以便重傳
+STAGING_DIR="$PROJECT/upload_staging"
+STAGING_RETENTION_DAYS=3
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
@@ -36,6 +39,12 @@ mapfile -t OLD_FILES < <(find "$DATA_DIR" -maxdepth 1 -type f \
   -mtime +"$RETENTION_DAYS" 2>/dev/null)
 
 STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+# 先清上傳暫存 (只刪 upload_staging/YYYYMMDD 這種日期資料夾)
+if [ -d "$STAGING_DIR" ] && [ "$DRY_RUN" -eq 0 ]; then
+  find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended \
+    -regex '.*/[0-9]{8}' -mtime +"$STAGING_RETENTION_DAYS" -exec rm -rf {} + 2>/dev/null
+fi
 if [ "${#OLD_FILES[@]}" -eq 0 ]; then
   echo "[$STAMP] cleanup: 沒有超過 ${RETENTION_DAYS} 天的每日 CSV, 不用刪" | tee -a "$LOG_FILE"
   exit 0

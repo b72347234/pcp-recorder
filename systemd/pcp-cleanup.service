@@ -1,0 +1,9 @@
+# 刪掉超過保留天數的每日 CSV 與已上傳的壓縮暫存檔。由 pcp-cleanup.timer 觸發。
+[Unit]
+Description=PCP recorder old CSV cleanup
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@PROJECT@
+ExecStart=/bin/bash @PROJECT@/cleanup-old-csv.sh

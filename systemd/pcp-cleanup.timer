@@ -1,0 +1,9 @@
+[Unit]
+Description=PCP recorder daily cleanup (10:30 台北時間, 在上傳之後)
+
+[Timer]
+OnCalendar=*-*-* 10:30:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target
