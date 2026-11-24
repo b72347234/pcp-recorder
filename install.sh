@@ -41,7 +41,12 @@ else
 fi
 
 mkdir -p "$PROJECT/data" "$PROJECT/bin"
-chown "$RUN_USER": "$PROJECT/data" "$PROJECT/bin"
+# 舊版服務以 root 跑, 留下的每日 CSV / 上傳狀態檔是 root 的; 現在改用 RUN_USER 跑,
+# 要把擁有者一起轉過來, 否則 append 開檔會失敗、服務一直重啟。
+chown -R "$RUN_USER": "$PROJECT/data" "$PROJECT/bin"
+for p in upload_staging kaggle_dataset upload_state.json upload.log; do
+  [ -e "$PROJECT/$p" ] && chown -R "$RUN_USER": "$PROJECT/$p"
+done
 
 if [ "$BUILD" -eq 1 ]; then
   # 2. Rust
