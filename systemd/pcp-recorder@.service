@@ -1,0 +1,40 @@
+# PCP 期權盤口常駐錄製 (%i = gate | okx | bybit | binance | umx | derive)
+# 每間所一個進程、各寫自己的每日 CSV; 單間掛掉不影響其他間。
+# v5 (2026-11-24): --forever 無限循環、最近 3 個到期日、背景每 10 分鐘重新發現 pairs、
+# 每日換檔 (台北日期)、Bybit WS 斷線自動重連、單所失敗不拖垮整輪、
+# SIGTERM 乾淨關機、履約價 f64 解析。
+# 注意: 絕對不要在服務跑著的時候直接 cargo build 蓋掉 bin/recorder-v5;
+# 要改程式先 build 再複製成新的檔案 (例如 bin/recorder-v6), 改 unit 的 ExecStart 再 systemctl restart。
+#
+# 持久化說明 (2026-11-24 17:13 教訓):
+# 這份檔案的正本放在 home (~/workspace/bybit-pcp-recorder/systemd/)，因為
+# /etc/systemd/system/ 在 VM 被換掉時會跟著消失。換機後用 restore-services.sh
+# 把它裝回 /etc、daemon-reload、enable 並啟動六間服務。
+# 每小時健康檢查 (pcp-recorder-hourly-check) 會在發現 unit 不見或服務停掉時
+# 自動跑 restore-services.sh 裝回來。
+[Unit]
+Description=PCP options recorder (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/hatch/workspace/bybit-pcp-recorder
+ExecStart=/home/hatch/workspace/bybit-pcp-recorder/bin/recorder-v5 --only %i --strikes 5 --expiries 3 --forever --refresh-mins 10 --output-dir /home/hatch/workspace/bybit-pcp-recorder/data
+# egress proxy 不需要認證 (2026-11-24 實測 no-auth CONNECT 回 200), 所以這裡不放帳密;
+# SSL_CERT_FILE 是 CA bundle 路徑, 不是密碼。
+Environment=HTTPS_PROXY=http://hatch-egress-proxy:3128
+Environment=SSL_CERT_FILE=/run/hatch/egress-tls/ca-bundle.pem
+Restart=always
+RestartSec=10
+StartLimitBurst=10
+StartLimitIntervalSec=300
+TimeoutStopSec=30
+KillMode=control-group
+StandardOutput=append:/home/hatch/workspace/bybit-pcp-recorder/data/service-%i.log
+StandardError=inherit
+StandardInput=null
+
+[Install]
+WantedBy=default.target
