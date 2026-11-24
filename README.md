@@ -1,5 +1,7 @@
 # Bybit / Gate / OKX — U本位期權 PCP 套利錄盤口程式 v2：永續對沖（Rust）
 
+> **新機器部署（2026-11-24 起）**：照 [`ORACLE_SETUP.md`](ORACLE_SETUP.md) 在 Oracle Cloud 永久免費 VM 上跑 `sudo bash install.sh`，一次裝好六間常駐錄製、每日上傳（Google 雲端硬碟 rclone + HF + Kaggle）、每日清理。路徑不再寫死 `/home/hatch/...`，binary 改用 `bin/recorder-current` symlink，systemd 設定在 `systemd/`（樣板，由 install.sh 代換路徑）。下面舊內容提到的 `/home/hatch/...`、`recorder-v5`、hatch egress proxy 是舊機器的歷史紀錄。
+
 只錄盤口、做策略驗證，不下單、不接 API key。
 
 ## PCP，改用永續對沖

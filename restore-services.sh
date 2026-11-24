@@ -13,27 +13,21 @@
 # 會在下次檢查時又把它們裝回來。
 
 set -u
-PROJECT="/home/hatch/workspace/bybit-pcp-recorder"
-UNIT_SRC="$PROJECT/systemd/pcp-recorder@.service"
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_DST="/etc/systemd/system/pcp-recorder@.service"
 EXCHANGES="bybit gate okx binance umx derive"
 
-if [ ! -f "$UNIT_SRC" ]; then
-  echo "restore: unit 正本不見了：$UNIT_SRC，無法恢復" >&2
-  exit 1
-fi
-
 # 檢查 recorder binary 還在不在（換機後 home 會留下來，照理應該在）
-if [ ! -x "$PROJECT/bin/recorder-v5" ]; then
-  echo "restore: binary 不見了：$PROJECT/bin/recorder-v5，無法恢復" >&2
+if [ ! -x "$PROJECT/bin/recorder-current" ]; then
+  echo "restore: binary 不見了：$PROJECT/bin/recorder-current，請跑 sudo bash install.sh" >&2
   exit 1
 fi
 
 CHANGED=0
-if [ ! -f "$UNIT_DST" ] || ! cmp -s "$UNIT_SRC" "$UNIT_DST"; then
-  cp "$UNIT_SRC" "$UNIT_DST"
-  systemctl daemon-reload
-  echo "restore: unit 已裝回 /etc 並 daemon-reload"
+if [ ! -f "$UNIT_DST" ]; then
+  # unit 不見了 (換機): 用 install.sh 重裝 systemd 設定, 不重新編譯
+  bash "$PROJECT/install.sh" --no-build
+  echo "restore: 已用 install.sh --no-build 裝回 systemd 設定"
   CHANGED=1
 fi
 

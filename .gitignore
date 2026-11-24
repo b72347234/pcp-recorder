@@ -1,0 +1,9 @@
+/target/
+/data/
+/bin/
+/.venv-upload/
+/upload_staging/
+/upload_state.json
+/upload.log
+/upload.env
+/kaggle_dataset/*.gz
